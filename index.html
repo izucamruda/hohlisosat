@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Электротехнический Триколор // Лаборатория</title>
+    <style>
+        :root { --bg: #05060b; --panel: #0b0d16; --border: #1b1f38; --blue: #2563eb; --text: #f1f5f9; }
+        body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: monospace; display: flex; height: 100vh; overflow: hidden; }
+        .sidebar { width: 340px; background: var(--panel); border-right: 2px solid var(--border); display: flex; flex-direction: column; height: 100%; }
+        .sb-header { padding: 20px; border-bottom: 2px solid var(--border); background: #0e111d; }
+        .sb-header h1 { margin: 0; font-size: 1.1rem; letter-spacing: 1px; background: linear-gradient(to bottom, #fff 33%, #005bbb 33%, #005bbb 66%, #d52b1e 66%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .audio-btn { background: #ef4444; color: #000; padding: 3px 8px; font-size: 0.7rem; font-weight: bold; border-radius: 3px; cursor: pointer; display: inline-block; margin-top: 10px; }
+        .lab-list { flex: 1; overflow-y: auto; padding: 10px; }
+        .lab-item { width: 100%; background: #101322; border: 1px solid var(--border); color: #94a3b8; padding: 12px; margin-bottom: 6px; border-radius: 4px; cursor: pointer; text-align: left; font-size: 0.75rem; font-family: monospace; }
+        .lab-item.active { background: var(--blue); color: #fff; border-color: #60a5fa; box-shadow: 0 0 10px rgba(37, 99, 235, 0.4); }
+        .main { flex: 1; display: flex; flex-direction: column; height: 100%; }
+        .vp-container { flex: 1; background: #000; display: flex; justify-content: center; align-items: center; position: relative; }
+        canvas { max-width: 100%; max-height: 100%; aspect-ratio: 16/9; }
+        .controls { height: 240px; background: var(--panel); border-top: 2px solid var(--border); display: grid; grid-template-columns: 1fr 340px; padding: 20px; gap: 20px; box-sizing: border-box; }
+        .info h2 { margin: 0 0 8px 0; font-size: 1rem; text-transform: uppercase; color: #fff; }
+        .info p { margin: 0; font-size: 0.8rem; line-height: 1.4; color: #94a3b8; }
+        .sliders { border-left: 1px solid var(--border); padding-left: 20px; display: flex; flex-direction: column; justify-content: space-between; }
+        .slider-group label { display: block; font-size: 0.7rem; color: #64748b; margin-bottom: 5px; text-transform: uppercase; }
+        .slider-group input { width: 100%; accent-color: var(--blue); }
+        .overclock-btn { background: #1e293b; border: 1px solid #334155; color: #ef4444; padding: 8px; text-align: center; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.75rem; user-select: none; }
+        .overclock-btn.active { background: #ef4444; color: #000; box-shadow: 0 0 15px #ef4444; }
+        .telemetry { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; background: #040509; padding: 8px; border-radius: 4px; border: 1px solid var(--border); font-size: 0.7rem; }
+        .tel-val { color: #f59e0b; font-weight: bold; margin-top: 2px; }
+    </style>
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sb-header">
+            <h1>E-TRICOLOR v3.0</h1>
+            <div class="audio-btn" id="audioBtn" onclick="toggleAudio()">ЗВУК: ВЫКЛ</div>
+        </div>
+        <div class="lab-list" id="labList"></div>
+    </div>
+    <div class="main">
+        <div class="vp-container">
+            <canvas id="stage" width="960" height="540"></canvas>
+        </div>
+        <div class="controls">
+            <div class="info">
+                <h2 id="labTitle">-</h2>
+                <p id="labDesc">-</p>
+            </div>
+            <div class="sliders">
+                <div class="slider-group">
+                    <label id="sliderLabel">НАГРУЗКА ТОКА</label>
+                    <input type="range" id="powerSlider" min="10" max="200" value="100">
+                </div>
+                <!-- Исправлены mousedown/mouseup на onmousedown/onmouseup + добавлены тачи для мобилок -->
+                <div class="overclock-btn" id="ocBtn" 
+                     onmousedown="setOC(true)" onmouseup="setOC(false)" onmouseleave="setOC(false)"
+                     ontouchstart="setOC(true)" ontouchend="setOC(false)">
+                     ЗАЖАТЬ РАЗГОН СЕТИ 
+                </div>
+                <div class="telemetry">
+                    <div><div style="color:#64748b">НАПРЯЖЕНИЕ</div><div class="tel-val" id="vVolt">-</div></div>
+                    <div><div style="color:#64748b">СИЛА ТОКА</div><div class="tel-val" id="vAmp">-</div></div>
+                    <div><div style="color:#64748b">ТЕМПЕРАТУРА</div><div class="tel-val" id="vTemp">-</div></div>
+                    <div><div style="color:#64748b">СТАТУС ПК</div><div class="tel-val" id="vCpu">СТАБИЛЬНО</div></div>
+                </div>
+            </div> <!-- Этот тег закрывает .sliders и теперь всё на своих местах -->
+        </div>
+    </div>
+    <script>const canvas = document.getElementById('stage'); 
+const ctx = canvas.getContext('2d'); 
+let currentLab = 'led'; 
+let globalPower = 1.0; 
+let isOverclocked = false; 
+let time = 0; 
+let audioCtx = null, mainOsc = null, mainGain = null;
+
+const db = { 
+    led: { title: "01 // Полупроводниковая Матрица", desc: "Свечение p-n переходов GaN и GaP полупроводников. Белая полоса задействует люминофор.", v: 3.4, a: 150, t: 25, label: "Частота ШИМ модуля" }, 
+    jacob: { title: "02 // Высоковольтные Лестницы Иакова", desc: "Электрический пробой воздуха 30кВ. Дуга окрашивается солями Магния, Индия и Стронция.", v: 30000, a: 1.2, t: 1900, label: "Вольтаж трансформатора" }, 
+    peltier: { title: "03 // Матрица Пельтье (ИК-Спектр)", desc: "Флаг в инфракрасном диапазоне. Верх раскален до +90°C, середина заморожена до -20°C, низ +35°C.", v: 48, a: 900, t: 90, label: "Сила накачки электронов" }, 
+    relay: { title: "04 // Искровой Релейный Щит", desc: "Сотни силовых контакторов размыкают индуктивные цепи, формируя флаг из снопов высоковольтных искр.", v: 380, a: 1800, t: 80, label: "Частота коммутации (Гц)" }, 
+    mhd: { title: "05 // Магнитная Гидродинамика", desc: "Сверхпроводящие магниты упорядочивают наночастицы в жидком металле, меняя спектр отражения.", v: 220, a: 6000, t: -196, label: "Индукция поля катушек" }, 
+    electrolysis: { title: "06 // Ионный Электролиз Раствора", desc: "Электрический ток высвобождает ионы у электродов, мгновенно меняя цвет лакмусовых индикаторов.", v: 12, a: 4000, t: 50, label: "Скорость прокачки помпы" }, 
+    cherenkov: { title: "07 // Квантовый Эффект Черенкова", desc: "Радиационный флаг. Электроны движутся в воде быстрее скорости света, генерируя черенковский свет.", v: 1500000, a: 10, t: 400, label: "Энергия пучка ускорителя" }, 
+    crt: { title: "08 // Многолучевой Вакуумный Кинескоп", desc: "Три плоских пучка электронов под напряжением 32кВ бомбардируют три полосы редкоземельных люминофоров.", v: 32000, a: 0.08, t: 60, label: "Напряжение фокусировки" }, 
+    corona: { title: "09 // Ионный Коронный Разряд", desc: "Сверхвысокое поле на массивах нано-игл зажигает воздух. Микро-впрыск неона и аргона строит триколор.", v: 500000, a: 0.05, t: 40, label: "Потенциал ионизации" }, 
+    sonolum: { title: "10 // Акустическая Кавитация", desc: "Пьезоизлучатели на частоте 45кГц превращают ток в звук, а звук в свет через схлопывание пузырьков.", v: 110, a: 250, t: 95, label: "Акустический резонанс" } 
+};
+
+function initSidebar() { 
+    const list = document.getElementById('labList'); 
+    Object.keys(db).forEach((key) => { 
+        const btn = document.createElement('button'); 
+        // Исправлена синтаксическая ошибка с кавычками ``
+        btn.className = `lab-item ${key === currentLab ? 'active' : ''}`; 
+        btn.innerHTML = db[key].title; 
+        btn.onclick = () => { 
+            document.querySelectorAll('.lab-item').forEach(b => b.classList.remove('active')); 
+            btn.classList.add('active'); 
+            currentLab = key; 
+            document.getElementById('labTitle').innerText = db[key].title; 
+            document.getElementById('labDesc').innerText = db[key].desc; 
+            document.getElementById('sliderLabel').innerText = db[key].label; 
+        }; 
+        list.appendChild(btn); 
+    }); 
+    document.getElementById('labTitle').innerText = db[currentLab].title; 
+    document.getElementById('labDesc').innerText = db[currentLab].desc; 
+    document.getElementById('sliderLabel').innerText = db[currentLab].label;
+}
+
+function toggleAudio() { 
+    if (!audioCtx) { 
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)(); 
+        mainOsc = audioCtx.createOscillator(); 
+        mainGain = audioCtx.createGain(); 
+        mainOsc.type = 'sawtooth'; 
+        mainOsc.frequency.setValueAtTime(50, audioCtx.currentTime); 
+        mainGain.gain.setValueAtTime(0.03, audioCtx.currentTime); 
+        mainOsc.connect(mainGain); 
+        mainGain.connect(audioCtx.destination); 
+        mainOsc.start(); 
+        document.getElementById('audioBtn').style.background = '#10b981'; 
+        document.getElementById('audioBtn').innerText = "ЗВУК: ON"; 
+    } else { 
+        if (audioCtx.state === 'suspended') { 
+            audioCtx.resume(); 
+            document.getElementById('audioBtn').innerText = "ЗВУК: ON"; 
+        } else { 
+            audioCtx.suspend(); 
+            document.getElementById('audioBtn').innerText = "ЗВУК: OFF"; 
+        } 
+    } 
+}
+
+// Восстановлен оборванный кусок функции звука
+function setAudio(freq, vol, type='sawtooth') { 
+    if (audioCtx && mainOsc && audioCtx.state === 'running') { 
+        mainOsc.type = type; 
+        mainOsc.frequency.setValueAtTime(freq, audioCtx.currentTime); 
+        mainGain.gain.setValueAtTime(vol * 0.05, audioCtx.currentTime); 
+    } 
+}
+
+// Навешивание событий разгона
+const ocBtn = document.getElementById('ocBtn'); 
+function setOC(state) { 
+    isOverclocked = state; 
+    if(state) ocBtn.classList.add('active'); 
+    else ocBtn.classList.remove('active'); 
+} 
+
+if (ocBtn) {
+    ocBtn.addEventListener('mousedown', () => setOC(true)); 
+    ocBtn.addEventListener('mouseup', () => setOC(false)); 
+    ocBtn.addEventListener('mouseleave', () => setOC(false)); 
+    ocBtn.addEventListener('touchstart', (e) => { e.preventDefault(); setOC(true); }); 
+    ocBtn.addEventListener('touchend', () => setOC(false));
+}
+
+document.getElementById('powerSlider').oninput = (e) => { 
+    globalPower = e.target.value / 100; 
+};
+
+function updateTelemetry() { 
+    let l = db[currentLab]; 
+    let ocMult = isOverclocked ? 2.5 : 1.0; 
+    let p = globalPower * ocMult; 
+    document.getElementById('vVolt').innerText = Math.round(l.v * p) + " V"; 
+    document.getElementById('vAmp').innerText = (l.a * p).toFixed(1) + " A"; 
+    document.getElementById('vTemp').innerText = Math.round(l.t * p) + " °C";
+    
+    let cpu = document.getElementById('vCpu');
+    if (isOverclocked) {
+        cpu.innerText = "ПРОЦЕССОР СГОРЕЛ"; 
+        cpu.style.color = "#ef4444";
+        // Жесткий лаг
+        let start = performance.now(); 
+        while(performance.now() - start < Math.random() * 12) {}
+    } else {
+        cpu.innerText = globalPower > 1.4 ? "КУЛЕРЫ ПЛАВЯТСЯ" : "СТАБИЛЬНО";
+        cpu.style.color = globalPower > 1.4 ? "#f59e0b" : "#10b981";
+    }
+}
+
+window.onload = () => { 
+    initSidebar(); 
+    function loop() { 
+        // Исправлен приоритет математических операций
+        time += (isOverclocked ? 3.0 : 1.0) * globalPower; 
+        updateTelemetry();
+        
+        let drawFunc = window["draw_" + currentLab];
+        if (typeof drawFunc === 'function') {
+            drawFunc(ctx, canvas.width, canvas.height, time, globalPower, isOverclocked);
+        }
+        requestAnimationFrame(loop);
+    }
+    loop();
+};
+
+
+
+
+/* = 1_led.js = */
+function draw_led(ctx, w, h, t, p, oc) { 
+    // Глубокий темный фон лаборатории
+    ctx.fillStyle = '#030306'; 
+    ctx.fillRect(0, 0, w, h); 
+    
+    // Исправлена генерация частоты звука (ШИМ-гул)
+    let freq = 60 + Math.sin(t * 0.05) * 4;
+    // Снизили базовую громкость, чтобы не била по ушам, при разгоне звук становится агрессивнее
+    let vol = oc ? 0.6 : 0.2; 
+    setAudio(freq, vol, 'sine'); 
+    
+    let r = 18, c = 34, size = 8, gap = 14; 
+    let sx = (w - (c * (size + gap))) / 2 + size/2; 
+    let sy = (h - (r * (size + gap))) / 2 + size/2; 
+    
+    for (let i = 0; i < r; i++) { 
+        // Логика формирования Российского Триколора по строкам
+        let col = '#ffffff'; // Верхняя треть — белая
+        if (i >= 6 && i < 12) col = '#005bbb'; // Синяя
+        if (i >= 12) col = '#d52b1e'; // Красная
+        
+        // Исправлена формула мерцания (волна ШИМ)
+        let wave = Math.sin(t * 0.1 + i) * 0.2;
+        let fl = (0.8 + wave) * p; 
+        
+        // Эффект перегрузки при разгоне сети (хаотичные искры/помехи ШИМ)
+        if (oc) {
+            fl += (Math.random() - 0.5) * 0.6;
+        }
+        
+        // Свечение диодов (Bloom-эффект)
+        ctx.shadowBlur = Math.max(0, 15 * fl); 
+        ctx.shadowColor = col; 
+        ctx.fillStyle = col; 
+        
+        // Отрисовка сетки светодиодов
+        for (let j = 0; j < c; j++) { 
+            ctx.beginPath(); 
+            // Исправлены пропущенные умножения j * (...) и i * (...)
+            ctx.arc(sx + j * (size + gap), sy + i * (size + gap), (size / 2) * Math.max(0.3, fl), 0, Math.PI * 2); 
+            ctx.fill(); 
+        } 
+    } 
+    // Сбрасываем тень, чтобы не тормозил интерфейс
+    ctx.shadowBlur = 0; 
+}
+
+// Привязываем функцию к глобальному объекту window для сборщика
+window.draw_led = draw_led;
+
+
+/* = 2_jacob.js = */
+function draw_jacob(ctx, w, h, t, p, oc) { 
+    // Глубокий черный фон лаборатории
+    ctx.fillStyle = '#010103'; 
+    ctx.fillRect(0, 0, w, h); 
+    
+    // Исправлено: Звук высоковольтного трансформатора (50 Гц + треск при разгоне)
+    let freq = 50 + (oc ? (Math.random() - 0.5) * 40 : (Math.random() - 0.5) * 4);
+    let vol = oc ? 0.8 : 0.3; 
+    setAudio(freq, vol, 'sawtooth'); 
+    
+    let sh = h / 3; 
+    let sh2 = sh * 2; // Исправлено: корректно объявили границу второй секции
+    
+    // Три секции триколора
+    let arr = [
+        { y1: 10,       y2: sh,     c: '#ffffff' }, // Верх (Белый)
+        { y1: sh,       y2: sh2,    c: '#0066ff' }, // Середина (Синий)
+        { y1: sh2,      y2: h - 10, c: '#ff2200' }  // Низ (Красный)
+    ]; 
+    
+    arr.forEach(s => { 
+        // Скорость подъема дуги
+        let prog = (t * (oc ? 0.05 : 0.02)) % 1; 
+        
+        // Текущая Y-координата электрического разряда
+        let cy = s.y2 - (s.y2 - s.y1) * prog; 
+        
+        // Исправлено: Расстояние между усами лестницы (кверху они расширяются)
+        let currentSpan = 40 + (1 - (cy / h)) * 120; 
+        
+        // 1. Отрисовка металлических направляющих (электродов)
+        ctx.strokeStyle = '#1b1f38'; 
+        ctx.lineWidth = 4; 
+        ctx.beginPath(); 
+        // Левый ус
+        ctx.moveTo(w / 2 - (40 + (1 - (s.y2 / h)) * 120), s.y2); 
+        ctx.lineTo(w / 2 - (40 + (1 - (s.y1 / h)) * 120), s.y1); 
+        // Правый ус
+        ctx.moveTo(w / 2 + (40 + (1 - (s.y2 / h)) * 120), s.y2); 
+        ctx.lineTo(w / 2 + (40 + (1 - (s.y1 / h)) * 120), s.y1); 
+        ctx.stroke(); 
+        
+        // 2. Отрисовка плазменной электрической дуги
+        ctx.strokeStyle = s.c; 
+        // Исправлено: Толщина и хаотичность дуги в зависимости от разгона
+        ctx.lineWidth = oc ? 6 : 2 + Math.random() * 3; 
+        ctx.shadowBlur = oc ? 40 : 20; 
+        ctx.shadowColor = s.c; 
+        
+        ctx.beginPath(); 
+        // Начинаем разряд от левого уса до правого
+        let startX = w / 2 - currentSpan;
+        ctx.moveTo(startX, cy); 
+        
+        let segments = 8;
+        for (let i = 1; i <= segments; i++) { 
+            let targetX = startX + (currentSpan * 2) * (i / segments);
+            // Создаем изломы молнии по оси Y
+            // Исправлено: Пропущенные умножения перед скобками
+            let targetY = cy + (Math.random() - 0.5) * (oc ? 45 : 15);
+            
+            // Если это последний сегмент — принудительно бьем точно в правый ус
+            if (i === segments) {
+                ctx.lineTo(w / 2 + currentSpan, cy);
+            } else {
+                ctx.lineTo(targetX, targetY); 
+            }
+        } 
+        ctx.stroke(); 
+        
+        // Дополнительная микро-вспышка в точках контакта с электродами
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(w / 2 - currentSpan, cy, 3, 0, Math.PI * 2);
+        ctx.arc(w / 2 + currentSpan, cy, 3, 0, Math.PI * 2);
+        ctx.fill();
+    }); 
+    
+    ctx.shadowBlur = 0; 
+}
+
+// Экспортируем функцию в глобальную видимость для сборщика
+window.draw_jacob = draw_jacob;
+
+
+/* = 3_peltier.js = */
+function draw_peltier(ctx, w, h, t, p, oc) { 
+    // Фон ИК-экрана (глубокий холодный фиолетовый)
+    ctx.fillStyle = '#040112'; 
+    ctx.fillRect(0, 0, w, h); 
+    
+    // Звук: Низкочастотный гул системы охлаждения (90 Гц)
+    // При разгоне звук становится выше и начинает вибрировать от перегрузки
+    let freq = 90 + (oc ? Math.sin(t * 0.4) * 20 : 0);
+    let vol = oc ? 0.4 : 0.15;
+    setAudio(freq, vol, 'triangle'); 
+    
+    let sh = h / 3; 
+    let cols = 48; // Количество термопар по горизонтали
+    let rows = 18; // Количество термопар по вертикали
+    
+    let cellW = (w - 40) / cols;
+    let cellH = (h - 40) / rows;
+    
+    for (let r = 0; r < rows; r++) {
+        let blockY = 20 + r * cellH;
+        
+        for (let c = 0; c < cols; c++) {
+            let blockX = 20 + c * cellW;
+            
+            // Базовый цвет в зависимости от зоны флага (Верх, Середина, Низ)
+            let red = 0, green = 0, blue = 0;
+            
+            // Тепловой шум ИК-матрицы (усиливается при разгоне сети)
+            let noise = (Math.random() - 0.5) * (oc ? 80 : 15);
+            
+            if (r < 6) {
+                // ВЕРХ: Раскаленная зона (Белый/Желтый спектр тепловизора, +90°C)
+                let pulse = Math.sin(t * 0.08 + c * 0.1) * 15;
+                red = Math.min(255, Math.max(0, 220 + pulse + noise));
+                green = Math.min(255, Math.max(0, 220 + pulse + noise));
+                blue = Math.min(255, Math.max(0, 180 + noise));
+            } else if (r >= 6 && r < 12) {
+                // СЕРЕДИНА: Ледяная зона (Абсолютный холод, глубокий синий/фиолетовый, -20°C)
+                red = Math.min(255, Math.max(0, 20 + noise));
+                green = Math.min(255, Math.max(0, 15 + noise));
+                blue = Math.min(255, Math.max(0, 90 + Math.sin(t * 0.05) * 20 + noise));
+            } else {
+                // НИЗ: Умеренное тепло (Красный спектр, +35°C)
+                red = Math.min(255, Math.max(0, 180 + noise));
+                green = Math.min(255, Math.max(0, 30 + noise));
+                blue = Math.min(255, Math.max(0, 30 + noise));
+            }
+            
+            // Эффект экстремального выгорания матрицы при разгоне сети
+            if (oc) {
+                red = Math.min(255, red * 1.5);
+                green = Math.min(255, green * 0.5);
+                blue = Math.min(255, blue * 2.0);
+            }
+            
+            // Отрисовка отдельного элемента Пельтье
+            ctx.fillStyle = `rgb(${Math.round(red)}, ${Math.round(green)}, ${Math.round(blue)})`;
+            ctx.fillRect(blockX + 1, blockY + 1, cellW - 2, cellH - 2);
+        }
+    }
+    
+    // Горизонтальные линии тепловых помех сканирования ИК-камеры
+    let scanLines = oc ? 30 : 10;
+    for (let i = 0; i < scanLines; i++) { 
+        // Исправлены строки rgba и пропущенные знаки умножения
+        ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.12})`; 
+        // Исправлено: Math.random() * h и Math.random() * (...)
+        ctx.fillRect(0, Math.random() * h, Math.random() * (oc ? w : w * 0.5), 1); 
+    } 
+}
+
+// Экспортируем для автоматического билдера
+window.draw_peltier = draw_peltier;
+
+
+/* = 4_relay.js = */
+function draw_relay(ctx, w, h, t, p, oc) { 
+    // Черный фон распределительного щита
+    ctx.fillStyle = '#06070a'; 
+    ctx.fillRect(0, 0, w, h); 
+    
+    // Шанс срабатывания реле на текущем кадре
+    let click = Math.random() < (oc ? 0.7 : 0.25); 
+    
+    // Оптимизация звука: Базовый индуктивный гул 50Гц + яростный треск искр
+    if (click) {
+        let sparkFreq = 200 + Math.random() * 800; // Частота щелчка
+        let sparkVol = oc ? 0.9 : 0.4;
+        setAudio(sparkFreq, sparkVol, 'square');
+    } else {
+        // Если вспышки нет, реле издает тихий фоновый гул катушек (50 Гц)
+        setAudio(50, oc ? 0.3 : 0.08, 'sawtooth');
+    }
+    
+    let sh = h / 3; 
+    let sparkCount = oc ? 25 : 6; // Количество одновременно искрящих реле
+    
+    for (let k = 0; k < sparkCount; k++) { 
+        // Исправлено: Выбор зоны флага (0, 1 или 2)
+        let z = Math.floor(Math.random() * 3); 
+        
+        // Исправлены пропущенные знаки умножения и переменная z * sh
+        let rx = 50 + Math.random() * (w - 100); 
+        let ry = z * sh + Math.random() * (sh - 20) + 10; 
+        
+        // Цвета флага
+        let col = ['#ffffff', '#2563eb', '#ef4444'][z]; 
+        
+        ctx.strokeStyle = col; 
+        ctx.lineWidth = oc ? 3 : 1.5; 
+        ctx.shadowBlur = oc ? 25 : 12; 
+        ctx.shadowColor = col; 
+        
+        // Отрисовка снопа искр (каждая искра — отдельный суб-путь)
+        ctx.beginPath(); 
+        let rays = 8;
+        for (let i = 0; i < rays; i++) { 
+            let a = (i * Math.PI / 4) + (Math.random() - 0.5) * 0.4; // Добавили хаотичности углам
+            // Исправлено умножение
+            let l = (3 + Math.random() * (oc ? 35 : 15)) * p; 
+            
+            ctx.moveTo(rx, ry); 
+            ctx.lineTo(rx + Math.cos(a) * l, ry + Math.sin(a) * l); 
+        } 
+        ctx.stroke(); // Рисуем всю искру разом — это работает быстро
+        
+        // Рисуем маленькую белую точку-ядро в центре взрыва дуги
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(rx, ry, oc ? 2 : 1, 0, Math.PI * 2);
+        ctx.fill();
+    } 
+    
+    // Гасим свечение, чтобы не тормозили другие элементы интерфейса
+    ctx.shadowBlur = 0; 
+}
+
+// Экспортируем функцию для компилятора
+window.draw_relay = draw_relay;
+
+
+/* = 5_mhd.js = */
+function draw_mhd(ctx, w, h, t, p, oc) { 
+    // Глубокий темный фон жидкого субстрата
+    ctx.fillStyle = '#020204'; 
+    ctx.fillRect(0, 0, w, h); 
+    
+    // Исправлено: Низкочастотный гул сверхпроводящих магнитов (42 Гц)
+    let freq = 42 + Math.sin(t * 0.04) * 3;
+    let vol = oc ? 0.6 : 0.25;
+    setAudio(freq, vol, 'sine'); 
+    
+    let sh = h / 3; 
+    
+    // Рендерим поток жидкого металла волновыми полосами
+    for (let y = 10; y < h - 10; y += 4) { 
+        // Исправлено: Безопасное определение индекса зоны флага (0, 1, 2)
+        let z = Math.min(2, Math.floor(y / sh)); 
+        
+        // Исправлены строки базовых цветов (оставляем место под альфа-канал)
+        let base = ['255,255,255', '0,110,255', '235,20,20'][z]; 
+        
+        // Исправлено: Амплитуда колебаний магнитного гидро-потока
+        let amp = (oc ? 50 : 18) * Math.sin(y * 0.04 + t * 0.08) * p; 
+        
+        // Исправлено: Расчет прозрачности (эффект бликов на металле)
+        let alpha = 0.4 + Math.sin(y * 0.08 + t * 0.15) * 0.3;
+        
+        // Корректная сборка RGBA строки
+        ctx.fillStyle = `rgba(${base}, ${alpha})`;
+        
+        // Исправлено: amp * 2 вместо amp2
+        ctx.fillRect(40 + amp, y, w - 80 - (amp * 2), 3); 
+        
+        // При сильном разгоне сети добавляем искрящиеся наночастицы в металл
+        if (oc && Math.random() < 0.05) {
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(40 + amp + Math.random() * (w - 80 - amp * 2), y, 2, 2);
+        }
+    } 
+    
+    // 2. Визуализация магнитных катушек индукции по бокам (кадр рамки)
+    ctx.strokeStyle = oc ? '#ef4444' : '#1b1f38';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(20, 10, w - 40, h - 20);
+}
+
+// Экспортируем функцию для автоматического билдера compile.py
+window.draw_mhd = draw_mhd;
+
+
+/* = 6_electrolysis.js = */
+function draw_electrolysis(ctx, w, h, t, p, oc) { 
+    // Глубокий темный фон химического раствора
+    ctx.fillStyle = '#03050a'; 
+    ctx.fillRect(0, 0, w, h); 
+    
+    // Звук: Бурление электролита и гул помпы (75 Гц)
+    // При разгоне звук становится выше и начинает пузыриться за счет частотной модуляции
+    let freq = 75 + (oc ? Math.abs(Math.sin(t * 0.2)) * 40 : 0);
+    let vol = oc ? 0.5 : 0.2;
+    setAudio(freq, vol, 'triangle'); 
+    
+    let sh = h / 3; 
+    let bubbleCount = oc ? 350 : 120; // Количество ионов-пузырьков gaz
+    
+    for (let i = 0; i < bubbleCount; i++) { 
+        // Детерминированный (фиксированный) расчет Y-координаты для каждого индекса i
+        // Использование Math.sin(i) вместо Math.random() останавливает хаотичные прыжки пузырьков
+        let pseudoRandomY = (Math.sin(i * 9.8) + 1) / 2; 
+        let ey = 15 + pseudoRandomY * (h - 30);
+        
+        // Определение зоны флага (0, 1, 2)
+        let ez = Math.min(2, Math.floor(ey / sh)); 
+        let col = ['#ffffff', '#2563eb', '#dc2626'][ez]; 
+        
+        // Исправлено: Горизонтальное движение пузырьков от тока
+        let speed = oc ? 4.5 : 1.8;
+        let ex = 40 + ((t * speed + i * 17) % (w - 80)); 
+        
+        // Размер пузырька газа (псевдослучайный, но фиксированный для индекса)
+        let radius = 1.5 + ((Math.cos(i * 5.5) + 1) / 2) * 2.5 * p;
+        
+        ctx.fillStyle = col; 
+        ctx.shadowBlur = oc ? 12 : 5; 
+        ctx.shadowColor = col; 
+        
+        ctx.beginPath(); 
+        // Исправлено: Математические знаки умножения внутри синусоиды покачивания и Math.PI * 2
+        let waveY = ey + Math.sin(ex * 0.03 + i) * 8;
+        ctx.arc(ex, waveY, radius, 0, Math.PI * 2); 
+        ctx.fill(); 
+        
+        // Блик внутри пузырька (для придания объема газу)
+        if (radius > 2.5) {
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.beginPath();
+            ctx.arc(ex - radius*0.3, waveY - radius*0.3, radius*0.2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    } 
+    
+    // Отрисовка погруженных титановых электродов по бокам ванны
+    ctx.fillStyle = '#1e293b';
+    ctx.shadowBlur = 0;
+    ctx.fillRect(20, 10, 15, h - 20); // Анод
+    ctx.fillRect(w - 35, 10, 15, h - 20); // Катод
+}
+
+// Экспортируем функцию для автоматического билдера compile.py
+window.draw_electrolysis = draw_electrolysis;
+
+
+/* = 7_cherenkov.js = */
+function draw_cherenkov(ctx, w, h, t, p, oc) { 
+    // Глубокий темный фон активной зоны реактора (тяжелая вода)
+    ctx.fillStyle = '#00010a'; 
+    ctx.fillRect(0, 0, w, h); 
+    
+    // Звук: Тяжелый, инфразвуковой гул ядерного реактора (25 Гц)
+    // При разгоне звук становится громче и начинает вибрировать
+    let freq = 25 + (oc ? Math.sin(t * 0.1) * 3 : 0);
+    let vol = oc ? 0.95 : 0.45;
+    setAudio(freq, vol, 'sawtooth'); 
+    
+    let sh = h / 3; 
+    
+    // --- 1. ВЕРХНЯЯ СЕКЦИЯ: Белая радиационная дымка ---
+    let alphaWhite = oc ? 0.85 : 0.45 + Math.sin(t * 0.08) * 0.1;
+    ctx.fillStyle = `rgba(255, 255, 255, ${alphaWhite * p})`;
+    ctx.shadowBlur = oc ? 40 : 20;
+    ctx.shadowColor = '#ffffff';
+    ctx.fillRect(0, 15, w, sh - 25);
+    
+    // --- 2. СРЕДНЯЯ СЕКЦИЯ: Главный черенковский когерентный свет (Синий) ---
+    let alphaBlue = oc ? 0.95 : 0.65 + Math.random() * 0.15;
+    let grad = ctx.createLinearGradient(0, 0, w, 0);
+    grad.addColorStop(0, 'rgba(0, 20, 70, 0)');
+    grad.addColorStop(0.5, `rgba(0, 110, 255, ${alphaBlue * p})`);
+    grad.addColorStop(1, 'rgba(0, 20, 70, 0)');
+    
+    ctx.fillStyle = grad;
+    ctx.shadowBlur = oc ? 60 : 35;
+    ctx.shadowColor = '#0055ff';
+    ctx.fillRect(0, sh, w, sh);
+    
+    // --- 3. НИЖНЯЯ СЕКЦИЯ: Тепловое свечение изотопов (Красный) ---
+    let alphaRed = oc ? 0.85 : 0.45 + Math.cos(t * 0.08) * 0.1;
+    ctx.fillStyle = `rgba(235, 25, 25, ${alphaRed * p})`;
+    ctx.shadowBlur = oc ? 40 : 20;
+    ctx.shadowColor = '#ff0000';
+    ctx.fillRect(0, sh * 2 + 10, w, sh - 25);
+    
+    // --- 4. ЭФФЕКТ ЧЕРЕНКОВА: Пролет квантовых релятивистских частиц ---
+    ctx.shadowBlur = 0; // Отключаем тени для оптимизации частиц
+    ctx.fillStyle = 'rgba(100, 200, 255, 0.6)';
+    let particleCount = oc ? 8 : 3;
+    
+    for (let i = 0; i < particleCount; i++) {
+        // Вычисляем траекторию трека частицы на основе времени и её индекса
+        let pId = i * 135.7;
+        let speed = oc ? 25 : 12;
+        let px = (t * speed + pId) % (w + 200) - 100;
+        let py = sh + ((Math.sin(pId) + 1) / 2) * sh; // Частицы летят в основном сквозь синюю воду
+        
+        // Отрисовка конусного следа (ударная волна света в среде)
+        ctx.strokeStyle = `rgba(0, 180, 255, ${oc ? 0.4 : 0.15})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px - 40, py - 15);
+        ctx.moveTo(px, py);
+        ctx.lineTo(px - 40, py + 15);
+        ctx.stroke();
+        
+        // Сама летящая сверхсветовая точка
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(px, py, 2, 2);
+    }
+}
+
+// Экспортируем функцию для компилятора
+window.draw_cherenkov = draw_cherenkov;
+
+
+/* = 8_crt.js = */
+function draw_crt(ctx, w, h, t, p, oc) {
+    // 1. Очистка экрана — глубокий черный бархат выключенного кинескопа
+    ctx.fillStyle = '#020205';
+    ctx.fillRect(0, 0, w, h);
+    
+    // Писк строчного трансформатора (15.625 кГц). При разгоне начинает жутко «плыть»
+    let freq = 15625 + (oc ? (Math.random() - 0.5) * 1200 : Math.sin(t * 0.1) * 10);
+    let vol = oc ? 0.04 : 0.015;
+    setAudio(freq, vol, 'sine');
+    
+    let sh = h / 3;
+    
+    // 2. БЫСТРАЯ ОТРИСОВКА: Заливаем 3 базовые полосы редкоземельного люминофора
+    ctx.fillStyle = '#1a1a24'; // Верх (пока без луча — тлеющий белый люминофор)
+    ctx.fillRect(0, 0, w, sh);
+    ctx.fillStyle = '#001144'; // Середина (тлеющий синий)
+    ctx.fillRect(0, sh, w, sh);
+    ctx.fillStyle = '#440000'; // Низ (тлеющий красный)
+    ctx.fillRect(0, sh * 2, w, h - sh * 2);
+    
+    // 3. ЭФФЕКТ СТРОЧНОЙ РАЗВЕРТКИ И ЛУЧА
+    // Вычисляем позицию горизонтального прохода электронного луча
+    let scanSpeed = oc ? 45 : 22;
+    let beamY = (t * scanSpeed) % h;
+    
+    // Эффект статического шума и помех при разгоне сети
+    if (oc && Math.random() < 0.15) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${Math.random() * 0.2})`;
+        ctx.fillRect(0, Math.random() * h, w, Math.random() * 10);
+    }
+    
+    // Накладываем маску теневой маски кинескопа (Scanlines)
+    let step = oc ? 6 : 3;
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    for (let i = 0; i < h; i += step) {
+        ctx.fillRect(0, i, w, oc ? 3 : 1);
+    }
+    
+    // 4. Отрисовка ярких RGB полос в точке пролета электронного пушка
+    for (let z = 0; z < 3; z++) {
+        let col = ['#ffffff', '#0066ff', '#ff3333'][z];
+        
+        // Проверяем, находится ли луч развертки в текущей зоне триколора
+        let zoneTop = z * sh;
+        let zoneBottom = (z + 1) * sh;
+        
+        if (beamY >= zoneTop && beamY <= zoneBottom) {
+            // Рисуем след засветки люминофора после пролета луча
+            let gradient = ctx.createLinearGradient(0, beamY - 40, 0, beamY + 5);
+            gradient.addColorStop(0, 'rgba(0,0,0,0)');
+            gradient.addColorStop(0.8, col);
+            gradient.addColorStop(1, '#fff'); // Само ядро электронного луча
+            
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, beamY - 40, w, 42);
+            
+            // Бегущая яркая точка по строке (горизонтальная синхронизация)
+            let sx = (t * (oc ? 55 : 30)) % w;
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowBlur = oc ? 30 : 15;
+            ctx.shadowColor = col;
+            ctx.fillRect(sx, beamY, oc ? 35 : 15, 3);
+            ctx.shadowBlur = 0;
+        }
+    }
+}
+
+// Экспортируем функцию для автоматического сборщика compile.py
+window.draw_crt = draw_crt;
+
+
+/* = 9_corona.js = */
+function draw_corona(ctx, w, h, t, p, oc) { 
+    // Глубокий темный фон вакуумной камеры
+    ctx.fillStyle = '#020205'; 
+    ctx.fillRect(0, 0, w, h); 
+    
+    // Звук: Сухой, шипящий высокочастотный треск короны (140 Гц + белый шум)
+    let freq = 140 + (oc ? (Math.random() - 0.5) * 150 : (Math.random() - 0.5) * 40);
+    let vol = oc ? 0.6 : 0.25;
+    setAudio(freq, vol, 'sawtooth'); 
+    
+    let sh = h / 3; 
+    let step = oc ? 10 : 20; // Плотность игл (при разгоне разрядов становится больше)
+    
+    // Рисуем 3 независимые зоны ионизации газов (Неон, Аргон, Воздух)
+    for (let z = 0; z < 3; z++) {
+        let cy = z * sh + sh / 2; // Исправлено: z * sh
+        let col = ['#ffffff', '#2563eb', '#e11d48'][z];
+        
+        ctx.strokeStyle = col; 
+        ctx.lineWidth = oc ? 2.5 : 1.2; 
+        ctx.shadowBlur = oc ? 20 : 8; 
+        ctx.shadowColor = col; 
+        
+        // Начало пакетной сборки путей молний (ПРОИЗВОДИТЕЛЬНОСТЬ Х100)
+        ctx.beginPath(); 
+        
+        for (let i = 15; i < w - 15; i += step) { 
+            // 1. Отрисовка металлической нано-иглы (источник поля)
+            ctx.moveTo(i, cy - 5);
+            ctx.lineTo(i, cy + 5);
+            
+            // 2. Исправлено: Генерация ветвящихся стримеров плазмы
+            let segments = oc ? 4 : 2;
+            let lastX = i;
+            let lastY = cy;
+            
+            for (let s = 0; s < segments; s++) {
+                // Исправлены знаки умножения
+                let targetX = lastX + (Math.random() - 0.5) * (oc ? 30 : 15) * p;
+                let targetY = lastY + (Math.random() - 0.5) * (oc ? 55 : 25) * p;
+                
+                ctx.moveTo(lastX, lastY);
+                ctx.lineTo(targetX, targetY);
+                
+                lastX = targetX;
+                lastY = targetY;
+            }
+        } 
+        
+        // Один stroke() на всю полосу цвета вместо сотен!
+        ctx.stroke(); 
+        
+        // Маленькие горячие фиолетовые точки на кончиках игл (активные зоны)
+        ctx.fillStyle = '#d8b4fe';
+        ctx.shadowBlur = 0;
+        ctx.beginPath();
+        for (let i = 15; i < w - 15; i += step) {
+            ctx.arc(i, cy, 1.5, 0, Math.PI * 2);
+        }
+        ctx.fill();
+    } 
+}
+
+// Экспортируем функцию для автоматического билдера
+window.draw_corona = draw_corona;
+
+
+/* = 10_sonolum.js = */
+function draw_sonolum(ctx, w, h, t, p, oc) { 
+    // Глубокий, кристально чистый черный фон дистиллированной воды
+    ctx.fillStyle = '#010103'; 
+    ctx.fillRect(0, 0, w, h); 
+    
+    // Звук: Ультразвуковой резонанс (24 кГц). 
+    // Для человеческого уха это почти тишина, но при разгоне сети частота падает в слышимый спектр
+    // имитируя разрушение стоячей волны и кавитационный скрежет
+    let freq = 24000 - (oc ? 22000 + Math.random() * 800 : 0);
+    let vol = oc ? 0.4 : 0.02; // При перегрузке звук становится слышимым и громким
+    setAudio(freq, vol, 'sine'); 
+    
+    let sh = h / 3; 
+    let bubbleCount = oc ? 200 : 60; // Количество светящихся кавитационных пузырьков
+    
+    // Рисуем 3 слоя акустического триколора
+    for (let k = 0; k < bubbleCount; k++) { 
+        // Исправлено: Выбор зоны флага (0, 1, 2)
+        let z = Math.floor(Math.random() * 3);
+        let col = ['#ffffff', '#3b82f6', '#ef4444'][z]; 
+        
+        // Исправлено: Распределение пузырьков вдоль акустической оси (пучности стоячей волны)
+        let angle = Math.random() * Math.PI * 2;
+        let radiusX = (oc ? 450 : 280) * Math.random();
+        
+        // Электроакустический фокус: сжимаем пузырьки к центру стоячей волны с помощью Math.sin
+        let sx = w / 2 + Math.cos(angle) * radiusX;
+        
+        // Базовая центральная линия для текущей полосы флага
+        // Исправлено: z * sh
+        let centerY = z * sh + sh / 2;
+        
+        // Синусоидальное смещение (стоячая волна давления 45 кГц)
+        // Исправлено умножение перед скобками
+        let waveSpread = (oc ? 45 : 20) * Math.sin(sx * 0.05 + t * 0.1);
+        let sy = centerY + waveSpread + (Math.random() - 0.5) * 15; 
+        
+        // Отрисовка мигающих плазменных ядер пузырьков
+        ctx.fillStyle = col; 
+        ctx.shadowBlur = oc ? 30 : 15; 
+        ctx.shadowColor = col; 
+        
+        ctx.beginPath(); 
+        // Исправлено умножение для радиуса и Math.PI * 2
+        let bubbleSize = (0.8 + Math.random() * (oc ? 4.5 : 2)) * p;
+        ctx.arc(sx, sy, Math.max(0.5, bubbleSize), 0, Math.PI * 2); 
+        ctx.fill(); 
+        
+        // Раз в несколько кадров пускаем ультразвуковые круги давления (ударные волны схлопывания)
+        if (oc && Math.random() < 0.005) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 40, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+    } 
+    
+    ctx.shadowBlur = 0; 
+    
+    // Рисуем силуэты кольцевых пьезоизлучателей сверху и снизу канваса
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(w/2 - 100, 5, 200, 5);
+    ctx.fillRect(w/2 - 100, h - 10, 200, 5);
+}
+
+// Экспортируем функцию для автоматического билдера compile.py
+window.draw_sonolum = draw_sonolum;
+</script>
+</body>
+</html>
